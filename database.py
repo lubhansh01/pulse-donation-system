@@ -43,5 +43,18 @@ def create_tables():
     )
     """)
 
+    # OPERATORS TABLE
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS operators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        phone TEXT UNIQUE,
+        age INTEGER,
+        email TEXT,
+        password TEXT,
+        is_active INTEGER DEFAULT 1
+    )
+   """)
+
     conn.commit()
     conn.close()

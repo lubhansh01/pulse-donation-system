@@ -15,32 +15,51 @@ st.markdown("---")
 
 # ---------------- LOGIN FUNCTION ----------------
 def login(username, password):
+    conn = get_connection()
+    cursor = conn.cursor()
+
     if username == "admin" and password == "admin123":
-        return "admin"
-    elif username == "operator" and password == "operator123":
-        return "operator"
+        return {"role": "admin", "name": "Admin"}
+
+    cursor.execute("""
+        SELECT * FROM operators
+        WHERE (phone = ? OR name = ?)
+        AND password = ?
+        AND is_active = 1
+    """, (username.strip(), username.strip(), password.strip()))
+
+    operator = cursor.fetchone()
+    conn.close()
+
+    if operator:
+        return {"role": "operator", "name": operator[1]}
+
     return None
 
 # ---------------- SESSION ----------------
 if "role" not in st.session_state:
     st.session_state.role = None
 
+if "user_name" not in st.session_state:
+    st.session_state.user_name = ""
+
 if "show_new_user" not in st.session_state:
     st.session_state.show_new_user = False
 
-# ---------------- LOGIN PAGE ----------------
+# ---------------- LOGIN ----------------
 if st.session_state.role is None:
 
     st.subheader("Login")
 
-    username = st.text_input("Username")
+    username = st.text_input("Username (Phone or Name)")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
         role = login(username, password)
         if role:
-            st.session_state.role = role
-            st.success(f"Logged in as {role}")
+            st.session_state.role = role["role"]
+            st.session_state.user_name = role["name"]
+            st.success(f"Logged in as {role['name']}")
             st.rerun()
         else:
             st.error("Invalid credentials")
@@ -48,7 +67,7 @@ if st.session_state.role is None:
 # ---------------- OPERATOR PANEL ----------------
 elif st.session_state.role == "operator":
 
-    st.sidebar.write("Logged in as Operator")
+    st.sidebar.write(f"👤 {st.session_state.user_name}")
 
     if st.sidebar.button("Logout"):
         st.session_state.role = None
@@ -59,67 +78,55 @@ elif st.session_state.role == "operator":
     conn = get_connection()
     cursor = conn.cursor()
 
-    # -------- NEW USER BUTTON --------
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("➕ New User"):
             st.session_state.show_new_user = True
 
-    # -------- NEW USER FORM --------
     if st.session_state.show_new_user:
 
         st.subheader("🆕 Create New User")
 
         name = st.text_input("Name")
-        phone = st.text_input("Phone Number")
+        phone = st.text_input("Phone")
         village = st.text_input("Village")
         age = st.number_input("Age", 1, 120)
 
         if st.button("Create User"):
             cursor.execute("SELECT COUNT(*) FROM users")
             count = cursor.fetchone()[0]
-
-            unique_id = generate_unique_id(count + 1)
+            uid = generate_unique_id(count + 1)
 
             try:
                 cursor.execute("""
                     INSERT INTO users (unique_id, name, phone, village, age)
                     VALUES (?, ?, ?, ?, ?)
-                """, (unique_id, name, phone, village, age))
+                """, (uid, name, phone, village, age))
 
                 conn.commit()
-
-                st.success(f"✅ User Created! Unique ID: {unique_id}")
+                st.success(f"User Created! ID: {uid}")
                 st.session_state.show_new_user = False
-
             except:
-                st.error("❌ Phone already exists!")
+                st.error("Phone already exists")
 
-    # -------- SEARCH USER --------
     st.markdown("---")
-    st.subheader("🔍 Enter Unique ID")
-
-    unique_id_input = st.text_input("Unique ID (e.g. PD1001)")
+    uid_input = st.text_input("Enter Unique ID")
 
     user = None
 
-    if unique_id_input:
-        cursor.execute("SELECT * FROM users WHERE unique_id = ?", (unique_id_input,))
+    if uid_input:
+        cursor.execute("SELECT * FROM users WHERE unique_id = ?", (uid_input,))
         user = cursor.fetchone()
 
         if user:
-            st.success(f"User: {user[2]} | Village: {user[4]}")
+            st.success(f"{user[2]} | {user[4]}")
         else:
-            st.error("❌ User not found. Please create new user.")
+            st.error("User not found")
 
-    # -------- DONATION ENTRY --------
     if user:
-        st.markdown("---")
-        st.subheader("💵 Add Donation")
-
         amount = st.number_input("Amount", min_value=1)
 
-        cause = st.selectbox("Select Cause", [
+        cause = st.selectbox("Cause", [
             "Donate for Gaushala",
             "Donate for Annaxtra",
             "Other"
@@ -129,17 +136,17 @@ elif st.session_state.role == "operator":
             cursor.execute("""
                 INSERT INTO donations (user_id, amount, cause, operator)
                 VALUES (?, ?, ?, ?)
-            """, (user[0], amount, cause, "operator"))
+            """, (user[0], amount, cause, st.session_state.user_name))
 
             conn.commit()
-            st.success("✅ Donation Recorded Successfully")
+            st.success("Donation recorded")
 
     conn.close()
 
 # ---------------- ADMIN PANEL ----------------
 elif st.session_state.role == "admin":
 
-    st.sidebar.write("Logged in as Admin")
+    st.sidebar.write("👑 Admin")
 
     if st.sidebar.button("Logout"):
         st.session_state.role = None
@@ -150,17 +157,16 @@ elif st.session_state.role == "admin":
     conn = get_connection()
 
     df = pd.read_sql("""
-        SELECT d.id, u.unique_id, u.name, u.village, d.amount, d.cause, d.timestamp
+        SELECT d.id, u.unique_id, u.name, u.village,
+               d.amount, d.cause, d.operator, d.timestamp
         FROM donations d
         JOIN users u ON d.user_id = u.id
     """, conn)
 
-    total = df["amount"].sum() if not df.empty else 0
-    st.metric("Total Donations", f"₹ {total}")
+    st.metric("Total Donations", f"₹ {df['amount'].sum() if not df.empty else 0}")
 
     st.markdown("---")
 
-    # -------- FILTERS --------
     st.subheader("🔍 Filters")
 
     col1, col2 = st.columns(2)
@@ -171,106 +177,241 @@ elif st.session_state.role == "admin":
     with col2:
         end_date = st.date_input("To Date", date.today())
 
-    village_filter = st.text_input("Filter by Village")
+    village = st.text_input("Village")
 
-    cause_filter = st.selectbox("Filter by Cause", ["All",
+    cause = st.selectbox("Cause", ["All",
         "Donate for Gaushala",
         "Donate for Annaxtra",
         "Other"
     ])
 
-    show_data = st.button("🔍 Show Data")
+    operator_filter = st.selectbox(
+        "Filter by Operator",
+        ["All"] + list(df["operator"].dropna().unique())
+    )
 
-    # -------- APPLY FILTERS --------
-    if show_data:
+    if st.button("Show Data"):
 
-        filtered_df = df.copy()
+        f = df.copy()
+        f["timestamp"] = pd.to_datetime(f["timestamp"])
 
-        filtered_df["timestamp"] = pd.to_datetime(filtered_df["timestamp"])
-
-        filtered_df = filtered_df[
-            (filtered_df["timestamp"].dt.date >= start_date) &
-            (filtered_df["timestamp"].dt.date <= end_date)
+        f = f[
+            (f["timestamp"].dt.date >= start_date) &
+            (f["timestamp"].dt.date <= end_date)
         ]
 
-        if village_filter:
-            filtered_df = filtered_df[
-                filtered_df["village"].str.contains(village_filter, case=False, na=False)
-            ]
+        if village:
+            f = f[f["village"].str.contains(village, case=False, na=False)]
 
-        if cause_filter != "All":
-            filtered_df = filtered_df[
-                filtered_df["cause"] == cause_filter
-            ]
+        if cause != "All":
+            f = f[f["cause"] == cause]
 
-        st.markdown("---")
+        if operator_filter != "All":
+            f = f[f["operator"] == operator_filter]
 
-        st.metric("Filtered Total", f"₹ {filtered_df['amount'].sum() if not filtered_df.empty else 0}")
+        st.metric("Filtered Total", f"₹ {f['amount'].sum() if not f.empty else 0}")
+        st.dataframe(f)
 
-        st.dataframe(filtered_df)
+        st.download_button("Download CSV", f.to_csv(index=False), "report.csv")
 
-        st.download_button(
-            "Download CSV",
-            filtered_df.to_csv(index=False),
-            "filtered_data.csv"
-        )
-
-    else:
-        st.info("Select filters and click 'Show Data'")
-
-    # -------- EXPENSES --------
     st.markdown("---")
+
+    # ---------------- EXPENSE ----------------
     st.subheader("💸 Add Expense")
 
-    exp_date = st.date_input("Expense Date", date.today())
-    
-    exp_amount = st.number_input("Expense Amount", min_value=1)
+    exp_date = st.date_input("Date", date.today())
+    exp_amt = st.number_input("Amount", min_value=1)
     exp_desc = st.text_input("Description")
 
-    if st.button("Add Expense"):
-        conn.execute(
-            "INSERT INTO expenses (amount, description, date) VALUES (?, ?, ?)",
-            (exp_amount, exp_desc, exp_date)
-        )
-
-        conn.commit()
-        st.success("Expense Added")
-    # -------- BUTTONS --------
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        add_expense_btn = st.button("Add Expense")
-        
+        if st.button("Add Expense"):
+            conn.execute(
+                "INSERT INTO expenses (amount, description, date) VALUES (?, ?, ?)",
+                (exp_amt, exp_desc, exp_date)
+            )
+            conn.commit()
+            st.success("Added")
+
     with col2:
-        show_expense_btn = st.button("📊 Show All Expenses")
+        if st.button("📊 Show All Expenses"):
+            exp_df = pd.read_sql("SELECT * FROM expenses ORDER BY date DESC", conn)
+            st.dataframe(exp_df)
+            st.download_button("Download CSV", exp_df.to_csv(index=False), "expenses.csv")
 
+    # ---------------- OPERATOR MANAGEMENT (UPDATED ONLY THIS PART) ----------------
+    st.markdown("---")
+    st.subheader("👥 Operator Management")
 
-    # -------- ADD EXPENSE --------
-    if add_expense_btn:
-        conn.execute(
-            "INSERT INTO expenses (amount, description, date) VALUES (?, ?, ?)",
-            (exp_amount, exp_desc, exp_date)
-      )
-        conn.commit()
-        st.success("Expense Added Successfully")
+    op_df = pd.read_sql("SELECT * FROM operators", conn)
 
+    if not op_df.empty:
+        for _, row in op_df.iterrows():
 
-    # -------- SHOW EXPENSES --------
-    if show_expense_btn:
-        st.markdown("---")
-        st.subheader("📊 All Expenses")
-        
-        exp_df = pd.read_sql(
-            "SELECT id, amount, description, date FROM expenses ORDER BY date DESC",
-            conn
-       )
-        
-    st.dataframe(exp_df)
+            col1, col2, col3 = st.columns([4,2,1])
 
-    # CSV DOWNLOAD ONLY
-    st.download_button(
-        "⬇️ Download CSV",
-        exp_df.to_csv(index=False),
-        "expenses.csv",
-        mime="text/csv"
+            col1.write(f"👤 {row['name']} ({row['phone']})")
+
+            current_status = bool(row["is_active"])
+
+            new_status = col2.toggle(
+                "Active",
+                value=current_status,
+                key=f"toggle_{row['id']}"
+            )
+
+            if new_status != current_status:
+                conn.execute(
+                    "UPDATE operators SET is_active = ? WHERE id = ?",
+                    (1 if new_status else 0, row["id"])
+                )
+                conn.commit()
+                st.success(f"{row['name']} updated")
+
+            if col3.button("❌", key=f"delete_{row['id']}"):
+                conn.execute("DELETE FROM operators WHERE id = ?", (row["id"],))
+                conn.commit()
+                st.warning(f"{row['name']} deleted")
+                st.rerun()
+
+    st.markdown("---")
+
+    if "show_add_operator" not in st.session_state:
+        st.session_state.show_add_operator = False
+
+    if st.button("➕ Add New Operator"):
+        st.session_state.show_add_operator = True
+
+    if st.session_state.show_add_operator:
+
+        st.subheader("🆕 Add New Operator")
+
+        name = st.text_input("Name")
+        phone = st.text_input("Phone")
+        age = st.number_input("Age", 1, 100)
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Add New Operator"):
+            try:
+                conn.execute("""
+                    INSERT INTO operators (name, phone, age, email, password)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    name.strip(),
+                    phone.strip(),
+                    age,
+                    email.strip(),
+                    password.strip()
+                ))
+                conn.commit()
+
+                st.success("Operator Added Successfully")
+                st.session_state.show_add_operator = False
+                st.rerun()
+
+            except:
+                st.error("Phone already exists")
+
+    conn.close()
+
+    # ---------------- USER MANAGEMENT ----------------
+    st.markdown("---")
+    st.subheader("👤 User Management")
+
+    conn = get_connection()
+
+    # -------- SEARCH USER --------
+    st.markdown("### 🔍 Search User")
+
+    search_input = st.text_input("Search by ID / Name / Village")
+
+    query = "SELECT * FROM users"
+    params = ()
+
+    if search_input:
+        query += """
+        WHERE unique_id LIKE ?
+        OR name LIKE ?
+        OR village LIKE ?
+    """
+    params = (
+        f"%{search_input}%",
+        f"%{search_input}%",
+        f"%{search_input}%"
     )
+
+    user_df = pd.read_sql(query, conn, params=params)
+
+    # -------- SHOW USERS --------
+    if not user_df.empty:
+        
+        for _, row in user_df.iterrows():
+            
+            col1, col2 = st.columns([5,1])
+            
+            col1.write(
+                f"👤 {row['name']} | ID: {row['unique_id']} | 📍 {row['village']}"
+            )
+            
+            # DELETE BUTTON
+            if col2.button("❌", key=f"delete_user_{row['id']}"):
+                
+                conn.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+                conn.commit()
+
+                st.warning(f"{row['name']} deleted")
+                st.rerun()
+
+    else:
+        st.info("No users found")
+
+    # -------- ADD USER --------
+    st.markdown("---")
+
+    if "show_add_user" not in st.session_state:
+        st.session_state.show_add_user = False
+
+    if st.button("➕ Add New User"):
+        st.session_state.show_add_user = True
+    
+    if st.session_state.show_add_user:
+        
+        st.subheader("🆕 Add New User")
+        
+        name = st.text_input("Name", key="admin_user_name")
+        phone = st.text_input("Phone", key="admin_user_phone")
+        village = st.text_input("Village", key="admin_user_village")
+        age = st.number_input("Age", 1, 120, key="admin_user_age")
+        
+        if st.button("Add User", key="submit_admin_user"):
+            
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            count = cursor.fetchone()[0]
+            
+            unique_id = generate_unique_id(count + 1)
+        try:
+            conn.execute("""
+                INSERT INTO users (unique_id, name, phone, village, age)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                unique_id,
+                name.strip(),
+                phone.strip(),
+                village.strip(),
+                age
+            ))
+
+            conn.commit()
+
+            st.success(f"✅ User Added! ID: {unique_id}")
+
+            st.session_state.show_add_user = False
+            st.rerun()
+
+        except:
+            st.error("❌ Phone already exists")
+
+    conn.close()
