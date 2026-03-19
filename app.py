@@ -78,11 +78,13 @@ elif st.session_state.role == "operator":
     conn = get_connection()
     cursor = conn.cursor()
 
+    # -------- NEW USER BUTTON --------
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("➕ New User"):
             st.session_state.show_new_user = True
 
+    # -------- CREATE USER --------
     if st.session_state.show_new_user:
 
         st.subheader("🆕 Create New User")
@@ -93,37 +95,78 @@ elif st.session_state.role == "operator":
         age = st.number_input("Age", 1, 120)
 
         if st.button("Create User"):
-            cursor.execute("SELECT COUNT(*) FROM users")
-            count = cursor.fetchone()[0]
-            uid = generate_unique_id(count + 1)
 
-            try:
-                cursor.execute("""
-                    INSERT INTO users (unique_id, name, phone, village, age)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (uid, name, phone, village, age))
+            # -------- VALIDATION --------
+            if not name.strip():
+                st.error("Name cannot be empty")
 
-                conn.commit()
-                st.success(f"User Created! ID: {uid}")
-                st.session_state.show_new_user = False
-            except:
-                st.error("Phone already exists")
+            elif not phone.strip():
+                st.error("Phone cannot be empty")
+
+            else:
+                try:
+                    import time
+                    uid = f"U{int(time.time())}"  # unique ID (no collision)
+
+                    cursor.execute("""
+                        INSERT INTO users (unique_id, name, phone, village, age)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (uid, name.strip(), phone.strip(), village.strip(), age))
+
+                    conn.commit()
+                    st.success(f"User Created! ID: {uid}")
+                    st.session_state.show_new_user = False
+                    st.rerun()
+
+                except Exception as e:
+                    if "users.phone" in str(e):
+                        st.error("Phone already exists")
+                    else:
+                        st.error(f"Error: {str(e)}")
 
     st.markdown("---")
-    uid_input = st.text_input("Enter Unique ID")
 
-    user = None
+    # -------- USER SEARCH --------
+    st.subheader("🔍 Find User")
 
-    if uid_input:
-        cursor.execute("SELECT * FROM users WHERE unique_id = ?", (uid_input,))
-        user = cursor.fetchone()
+    search_input = st.text_input("Enter Unique ID / Phone / Name")
 
-        if user:
-            st.success(f"{user[2]} | {user[4]}")
+    selected_user = None
+
+    if search_input:
+        cursor.execute("""
+            SELECT * FROM users
+            WHERE unique_id = ?
+            OR phone = ?
+            OR name LIKE ?
+        """, (search_input, search_input, f"%{search_input}%"))
+
+        users = cursor.fetchall()
+
+        if len(users) == 1:
+            user = users[0]
+            st.success(f"👤 {user[2]} | 📍 {user[4]} | 📞 {user[3]}")
+            selected_user = user
+
+        elif len(users) > 1:
+            st.warning("Multiple users found. Please select one:")
+
+            user_options = [
+                f"{u[2]} | {u[3]} | {u[4]} | Age: {u[5]}"
+                for u in users
+            ]
+
+            selected_option = st.selectbox("Select User", user_options)
+            selected_index = user_options.index(selected_option)
+            selected_user = users[selected_index]
+
         else:
-            st.error("User not found")
+            st.error("User not found. Please create new user.")
 
-    if user:
+    # -------- DONATION --------
+    if selected_user:
+        st.markdown("### 💰 Enter Donation")
+
         amount = st.number_input("Amount", min_value=1)
 
         cause = st.selectbox("Cause", [
@@ -136,10 +179,30 @@ elif st.session_state.role == "operator":
             cursor.execute("""
                 INSERT INTO donations (user_id, amount, cause, operator)
                 VALUES (?, ?, ?, ?)
-            """, (user[0], amount, cause, st.session_state.user_name))
+            """, (selected_user[0], amount, cause, st.session_state.user_name))
 
             conn.commit()
-            st.success("Donation recorded")
+            st.success("✅ Donation recorded successfully")
+            st.rerun()
+
+    st.markdown("---")
+
+    # -------- TODAY'S DONATIONS --------
+    st.subheader("📊 Today's Donations")
+
+    today_df = pd.read_sql("""
+        SELECT u.name, u.village, d.amount, d.cause, d.timestamp
+        FROM donations d
+        JOIN users u ON d.user_id = u.id
+        WHERE DATE(d.timestamp) = DATE('now')
+        AND d.operator = ?
+        ORDER BY d.timestamp DESC
+    """, conn, params=(st.session_state.user_name,))
+
+    if not today_df.empty:
+        st.dataframe(today_df)
+    else:
+        st.info("No donations recorded today")
 
     conn.close()
 
@@ -163,23 +226,16 @@ elif st.session_state.role == "admin":
         JOIN users u ON d.user_id = u.id
     """, conn)
 
-    # -------- TOTAL CALCULATIONS --------
-
     total_donation = df['amount'].sum() if not df.empty else 0
-
-    # Get expenses
     expense_df = pd.read_sql("SELECT * FROM expenses", conn)
     total_expense = expense_df['amount'].sum() if not expense_df.empty else 0
-
     final_balance = total_donation - total_expense
 
-    # -------- DISPLAY METRICS --------
-
     col1, col2, col3 = st.columns(3)
-
     col1.metric("💰 Total Donations", f"₹ {total_donation}")
     col2.metric("💸 Total Expenses", f"₹ {total_expense}")
     col3.metric("🏦 Final Balance", f"₹ {final_balance}")
+
     st.markdown("---")
 
     # -------- FILTERS --------
@@ -195,6 +251,8 @@ elif st.session_state.role == "admin":
 
     village = st.text_input("Village")
 
+    amount_filter = st.number_input("Filter by Amount", min_value=0.0, value=0.0)
+
     cause = st.selectbox("Cause", ["All",
         "Donate for Gaushala",
         "Donate for Annaxtra",
@@ -206,31 +264,48 @@ elif st.session_state.role == "admin":
         ["All"] + list(df["operator"].dropna().unique())
     )
 
+    # -------- SHOW DATA BUTTON --------
     if st.button("Show Data"):
 
         f = df.copy()
+
+        # Convert timestamp
         f["timestamp"] = pd.to_datetime(f["timestamp"])
 
+        # -------- DATE FILTER --------
         f = f[
             (f["timestamp"].dt.date >= start_date) &
             (f["timestamp"].dt.date <= end_date)
         ]
 
+        # -------- VILLAGE FILTER --------
         if village:
             f = f[f["village"].str.contains(village, case=False, na=False)]
 
+        # -------- CAUSE FILTER --------
         if cause != "All":
             f = f[f["cause"] == cause]
 
+        # -------- OPERATOR FILTER --------
         if operator_filter != "All":
             f = f[f["operator"] == operator_filter]
 
+        # -------- AMOUNT FILTER (FIXED) --------
+        if amount_filter > 0:
+            f = f[abs(f["amount"] - float(amount_filter)) < 0.01]
+
+        # -------- RESULTS --------
         st.metric("Filtered Total", f"₹ {f['amount'].sum() if not f.empty else 0}")
+
         st.dataframe(f)
 
-        st.download_button("Download CSV", f.to_csv(index=False), "report.csv")
-
-    st.markdown("---")
+        # -------- DOWNLOAD CSV --------
+        st.download_button(
+            label="📥 Download CSV",
+            data=f.to_csv(index=False),
+            file_name="filtered_report.csv",
+            mime="text/csv"
+        )
 
     # -------- EXPENSE --------
     st.subheader("💸 Expense Management")
@@ -241,7 +316,6 @@ elif st.session_state.role == "admin":
 
     col1, col2 = st.columns(2)
 
-    # -------- ADD EXPENSE --------
     with col1:
         if st.button("Add Expense", key="add_expense_btn"):
             conn.execute(
@@ -251,59 +325,55 @@ elif st.session_state.role == "admin":
             conn.commit()
             st.success("Expense Added")
             st.rerun()
-    # -------- SHOW + EDIT + DELETE --------
-    with col2:
-        if st.button("📊 Show All Expenses", key="show_expense_btn"):
-            
-            exp_df = pd.read_sql("SELECT * FROM expenses ORDER BY date DESC", conn)
-            
-            if not exp_df.empty:
-                st.dataframe(exp_df)
-                st.download_button(
-                    "Download CSV",
-                    exp_df.to_csv(index=False),
-                    "expenses.csv"
-                )
-                st.markdown("### ✏️ Edit / Delete Expense")
 
-                # Select expense
-                selected_exp = st.selectbox(
-                    "Select Expense",
-                    exp_df["id"].astype(str) + " | ₹" + exp_df["amount"].astype(str)
-                )
+    show_exp = st.toggle("📊 Show All Expenses")
 
-                exp_id = int(selected_exp.split(" | ")[0])
+    if show_exp:
+        exp_df = pd.read_sql("SELECT * FROM expenses ORDER BY date DESC", conn)
 
-                # Get selected row
-                selected_row = exp_df[exp_df["id"] == exp_id].iloc[0]
+        if not exp_df.empty:
+            st.dataframe(exp_df)
 
-                new_amt = st.number_input("Edit Amount", value=int(selected_row["amount"]))
-                new_desc = st.text_input("Edit Description", value=selected_row["description"])
-                new_date = st.date_input("Edit Date", value=pd.to_datetime(selected_row["date"]))
+            st.download_button(
+                "Download CSV",
+                exp_df.to_csv(index=False),
+                "expenses.csv"
+            )
 
-                col_edit, col_delete = st.columns(2)
-                # -------- UPDATE --------
-                with col_edit:
-                    if st.button("Update Expense", key="update_exp"):
-                        conn.execute("""
-                                     UPDATE expenses
-                                     SET amount = ?, description = ?, date = ?
-                                     WHERE id = ?
-                                 """, (new_amt, new_desc, new_date, exp_id))
-                        conn.commit()
-                        st.success("Expense Updated")
-                        st.rerun()
-                # -------- DELETE --------
-                with col_delete:
-                    if st.button("Delete Expense", key="delete_exp"):
-                        conn.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
-                        conn.commit()
+            st.markdown("### ✏️ Edit / Delete Expense")
 
-                        # 🔥 FORCE REFRESH
-                        st.success("Expense Deleted Successfully")
-                        st.experimental_rerun()
-            else:
-                st.info("No expenses found")
+            selected_exp = st.selectbox(
+                "Select Expense",
+                exp_df["id"].astype(str) + " | ₹" + exp_df["amount"].astype(str)
+            )
+
+            exp_id = int(selected_exp.split(" | ")[0])
+            selected_row = exp_df[exp_df["id"] == exp_id].iloc[0]
+
+            new_amt = st.number_input("Edit Amount", value=int(selected_row["amount"]))
+            new_desc = st.text_input("Edit Description", value=selected_row["description"])
+            new_date = st.date_input("Edit Date", value=pd.to_datetime(selected_row["date"]))
+
+            col_edit, col_delete = st.columns(2)
+
+            with col_edit:
+                if st.button("Update Expense"):
+                    conn.execute("""
+                        UPDATE expenses
+                        SET amount = ?, description = ?, date = ?
+                        WHERE id = ?
+                    """, (new_amt, new_desc, new_date, exp_id))
+                    conn.commit()
+                    st.rerun()
+
+            with col_delete:
+                if st.button("Delete Expense"):
+                    conn.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
+                    conn.commit()
+                    st.rerun()
+
+        else:
+            st.info("No expenses found")
 
     # -------- OPERATOR MANAGEMENT --------
     st.markdown("---")
@@ -340,6 +410,7 @@ elif st.session_state.role == "admin":
                 st.warning(f"{row['name']} deleted")
                 st.rerun()
 
+    # -------- ADD NEW OPERATOR BUTTON --------
     st.markdown("---")
 
     if "show_add_operator" not in st.session_state:
@@ -348,6 +419,7 @@ elif st.session_state.role == "admin":
     if st.button("➕ Add New Operator"):
         st.session_state.show_add_operator = True
 
+    # -------- ADD OPERATOR FORM --------
     if st.session_state.show_add_operator:
 
         st.subheader("🆕 Add New Operator")
@@ -458,10 +530,7 @@ elif st.session_state.role == "admin":
                 st.rerun()
             except:
                 st.error("Phone already exists")
-
-    conn.close()
-
-    # -------- DELETE TRANSACTION DATA (FIXED) --------
+    # -------- DELETE TRANSACTION DATA --------
     st.markdown("---")
     st.subheader("🗑️ Delete Transaction Data")
 
@@ -474,9 +543,6 @@ elif st.session_state.role == "admin":
 
     with col2:
         del_end_date = st.date_input("To Date", key="del_to")
-
-    # Re-open connection safely
-    conn = get_connection()
 
     df_check = pd.read_sql("SELECT * FROM donations", conn)
 
@@ -518,5 +584,3 @@ elif st.session_state.role == "admin":
 
     else:
         st.info("No transaction data available")
-
-    conn.close()
