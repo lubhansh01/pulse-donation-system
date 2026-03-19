@@ -293,16 +293,12 @@ elif st.session_state.role == "admin":
                         conn.commit()
                         st.success("Expense Updated")
                         st.rerun()
-                # -------- UPDATE --------
-                with col_edit:
-                    if st.button("Update Expense", key="update_exp"):
-                        conn.execute("""
-                                     UPDATE expenses
-                                     SET amount = ?, description = ?, date = ?
-                                     WHERE id = ?
-                                """, (new_amt, new_desc, new_date, exp_id))
+                # -------- DELETE --------
+                with col_delete:
+                    if st.button("Delete Expense", key="delete_exp"):
+                        conn.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
                         conn.commit()
-                        st.success("Expense Updated")
+                        st.warning("Expense Deleted")
                         st.rerun()
             else:
                 st.info("No expenses found")
