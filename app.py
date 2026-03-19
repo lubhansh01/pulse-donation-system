@@ -298,8 +298,10 @@ elif st.session_state.role == "admin":
                     if st.button("Delete Expense", key="delete_exp"):
                         conn.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
                         conn.commit()
-                        st.warning("Expense Deleted")
-                        st.rerun()
+
+                        # 🔥 FORCE REFRESH
+                        st.success("Expense Deleted Successfully")
+                        st.experimental_rerun()
             else:
                 st.info("No expenses found")
 
